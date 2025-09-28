@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::config::MAX_APP_NUM;
+use crate::syscall::SyscallStat;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
@@ -45,6 +46,7 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    task_syscall_stats: [SyscallStat; MAX_APP_NUM]
 }
 
 lazy_static! {
@@ -65,6 +67,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    task_syscall_stats: [SyscallStat::zero_init(); MAX_APP_NUM]
                 })
             },
         }
@@ -135,6 +138,20 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// Update syscall stats of current task
+    fn update_current_syscall_stat(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.task_syscall_stats[current].increase(syscall_id);
+    }
+
+    /// Query syscall stats of current task
+    fn query_current_syscall_stat(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.task_syscall_stats[current].get_stat(syscall_id)
+    }
 }
 
 /// Run the first task in task list.
@@ -156,6 +173,16 @@ fn mark_current_suspended() {
 /// Change the status of current `Running` task into `Exited`.
 fn mark_current_exited() {
     TASK_MANAGER.mark_current_exited();
+}
+
+/// Update syscall stats of current task
+pub fn update_current_syscall_stat(syscall_id: usize) {
+    TASK_MANAGER.update_current_syscall_stat(syscall_id);
+}
+
+/// Query syscall stats of current task
+pub fn query_current_syscall_stat(syscall_id: usize) -> usize {
+    TASK_MANAGER.query_current_syscall_stat(syscall_id)
 }
 
 /// Suspend the current 'Running' task and run the next task in task list.

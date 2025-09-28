@@ -10,6 +10,8 @@
 //! `sys_` then the name of the syscall. You can find functions like this in
 //! submodules, and you should also implement syscalls this way.
 
+/// number of types of syscalls
+const NUM_SYSCALLS: usize = 5;
 /// write syscall
 const SYSCALL_WRITE: usize = 64;
 /// exit syscall
@@ -26,9 +28,67 @@ mod process;
 
 use fs::*;
 use process::*;
+use crate::task::update_current_syscall_stat;
+
+/// sycall enum (indexed from 0)
+pub enum Syscall {
+    /// write syscall
+    SyscallWrite,
+    /// exit syscall
+    SyscallExit,
+    /// yield syscall
+    SyscallYield,
+    /// gettime syscall
+    SyscallGetTime,
+    /// trace syscall
+    SyscallTrace,
+    /// no such syscall
+    NonExist
+}
+
+/// struct to record number of syscalls called
+#[derive(Copy, Clone)]
+pub struct SyscallStat {
+    stat: [usize; NUM_SYSCALLS]
+}
+
+fn id_to_syscall(id: usize) -> Syscall {
+    match id {
+        SYSCALL_WRITE => Syscall::SyscallWrite,
+        SYSCALL_EXIT => Syscall::SyscallExit,
+        SYSCALL_YIELD => Syscall::SyscallYield,
+        SYSCALL_GET_TIME => Syscall::SyscallGetTime,
+        SYSCALL_TRACE => Syscall::SyscallTrace,
+        _ => Syscall::NonExist
+    }
+}
+
+impl SyscallStat {
+    /// initialization
+    pub fn zero_init() -> Self {
+        Self { stat: [0; NUM_SYSCALLS] }
+    }
+    /// record a syscall call
+    pub fn increase(&mut self, id: usize) {
+        let call = id_to_syscall(id);
+        match call {
+            Syscall::NonExist => (),
+            _ => self.stat[call as usize] += 1
+        }
+    }
+    /// get number of calls
+    pub fn get_stat(&self, id: usize) -> usize {
+        let call = id_to_syscall(id);
+        match call {
+            Syscall::NonExist => 0,
+            _ => self.stat[call as usize]
+        }
+    }
+}
 
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
+    update_current_syscall_stat(syscall_id);
     match syscall_id {
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_EXIT => sys_exit(args[0] as i32),

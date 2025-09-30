@@ -16,7 +16,9 @@ mod task;
 
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::syscall::SyscallStat;
 use crate::trap::TrapContext;
+use alloc::vec;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -46,6 +48,8 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    /// syscall stats
+    task_syscall_stats: Vec<SyscallStat>,
 }
 
 lazy_static! {
@@ -64,6 +68,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    task_syscall_stats: vec![SyscallStat::zero_init(); num_app]
                 })
             },
         }
@@ -153,6 +158,34 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// Update syscall stats of current task
+    fn update_current_syscall_stat(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.task_syscall_stats[current].increase(syscall_id);
+    }
+
+    /// Query syscall stats of current task
+    fn query_current_syscall_stat(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.task_syscall_stats[current].get_stat(syscall_id)
+    }
+
+    /// Mmap for current task
+    fn mmap_for_current(&self, start: usize, len: usize, prot: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.mmap(start, len, prot)
+    }
+
+    /// Munmap for current task
+    fn munmap_for_current(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.munmap(start, len)
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +234,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Update syscall stats of current task
+pub fn update_current_syscall_stat(syscall_id: usize) {
+    TASK_MANAGER.update_current_syscall_stat(syscall_id);
+}
+
+/// Query syscall stats of current task
+pub fn query_current_syscall_stat(syscall_id: usize) -> usize {
+    TASK_MANAGER.query_current_syscall_stat(syscall_id)
+}
+
+/// Mmap for current task
+pub fn mmap_for_current(start: usize, len: usize, prot: usize) -> isize {
+    TASK_MANAGER.mmap_for_current(start, len, prot)
+}
+
+/// Munmap for current task
+pub fn munmap_for_current(start: usize, len: usize) -> isize {
+    TASK_MANAGER.munmap_for_current(start, len)
 }

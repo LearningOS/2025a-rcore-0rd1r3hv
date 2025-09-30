@@ -70,6 +70,10 @@ impl PageTableEntry {
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
     }
+    /// The page pointered by page table entry is owned by user?
+    pub fn user_owned(&self) -> bool {
+        (self.flags() & PTEFlags::U) != PTEFlags::empty()
+    }
 }
 
 /// page table structure
@@ -135,17 +139,25 @@ impl PageTable {
     }
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
-    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) -> isize {
         let pte = self.find_pte_create(vpn).unwrap();
-        assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
+        // assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
+        if pte.is_valid() {
+            return -1;
+        }
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+        0
     }
     /// remove the map between virtual page number and physical page number
     #[allow(unused)]
-    pub fn unmap(&mut self, vpn: VirtPageNum) {
+    pub fn unmap(&mut self, vpn: VirtPageNum) -> isize {
         let pte = self.find_pte(vpn).unwrap();
-        assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+        // assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+        if !pte.is_valid() {
+            return -1;
+        }
         *pte = PageTableEntry::empty();
+        0
     }
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
@@ -178,4 +190,35 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// Read a byte
+pub fn read_a_byte(token: usize, ptr: *const u8) -> isize {
+    let page_table = PageTable::from_token(token);
+    let ptr_va = VirtAddr(ptr as usize);
+    if let Some(pte) = page_table.find_pte(ptr_va.floor()) {
+        if pte.is_valid() && pte.readable() && pte.user_owned() {
+            translated_byte_buffer(token, ptr, 1)[0][0] as isize
+        } else {
+            -1
+        }
+    } else {
+        -1
+    }
+}
+
+/// Write a byte
+pub fn write_a_byte(token: usize, ptr: *mut u8, data: u8) -> isize {
+    let page_table = PageTable::from_token(token);
+    let ptr_va = VirtAddr(ptr as usize);
+    if let Some(pte) = page_table.find_pte(ptr_va.floor()) {
+        if pte.is_valid() && pte.writable() && pte.user_owned() {
+            translated_byte_buffer(token, ptr, 1)[0][0] = data;
+            0
+        } else {
+            -1
+        }
+    } else {
+        -1
+    }
 }

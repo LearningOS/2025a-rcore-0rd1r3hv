@@ -262,6 +262,38 @@ impl MemorySet {
             false
         }
     }
+    /// mmap
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        // Meaningless
+        if (prot & !0x7 != 0) || (prot & 0x7 == 0) {
+            return -1;
+        }
+        let start_va = VirtAddr(start);
+        // Not page aligned
+        if start_va.page_offset() != 0 {
+            return -1;
+        }
+        let end_va = VirtAddr(start + len);
+        let map_permission = MapPermission::from_bits((prot as u8) << 1).unwrap() | MapPermission::U;
+        let mut new_area = MapArea::new(start_va, end_va, MapType::Framed, map_permission);
+        // for area in &self.areas {
+        //     if new_area.overlaps_with(area) {
+        //         return -1;
+        //     }
+        // }
+        new_area.map(&mut self.page_table)
+    }
+    /// munmap
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let start_va = VirtAddr(start);
+        // Not page aligned
+        if start_va.page_offset() != 0 {
+            return -1;
+        }
+        let end_va = VirtAddr(start + len);
+        let mut new_area = MapArea::new(start_va, end_va, MapType::Framed, MapPermission::U);
+        new_area.unmap(&mut self.page_table)
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -287,50 +319,60 @@ impl MapArea {
             map_perm,
         }
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> isize {
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
                 ppn = PhysPageNum(vpn.0);
             }
             MapType::Framed => {
-                let frame = frame_alloc().unwrap();
-                ppn = frame.ppn;
-                self.data_frames.insert(vpn, frame);
+                // If allocation is success
+                if let Some(frame) = frame_alloc() {
+                    ppn = frame.ppn;
+                    self.data_frames.insert(vpn, frame);
+                } else {
+                    return -1;
+                }
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
-        page_table.map(vpn, ppn, pte_flags);
+        page_table.map(vpn, ppn, pte_flags)
     }
     #[allow(unused)]
-    pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> isize {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
-        page_table.unmap(vpn);
+        page_table.unmap(vpn)
     }
-    pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable) -> isize {
         for vpn in self.vpn_range {
-            self.map_one(page_table, vpn);
+            if self.map_one(page_table, vpn) == -1 {
+                return -1;
+            }
         }
+        0
     }
     #[allow(unused)]
-    pub fn unmap(&mut self, page_table: &mut PageTable) {
+    pub fn unmap(&mut self, page_table: &mut PageTable) -> isize {
         for vpn in self.vpn_range {
-            self.unmap_one(page_table, vpn);
+            if self.unmap_one(page_table, vpn) == -1 {
+                return -1;
+            }
         }
+        0
     }
     #[allow(unused)]
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(new_end, self.vpn_range.get_end()) {
-            self.unmap_one(page_table, vpn)
+            self.unmap_one(page_table, vpn);
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
     #[allow(unused)]
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
-            self.map_one(page_table, vpn)
+            self.map_one(page_table, vpn);
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
@@ -355,6 +397,11 @@ impl MapArea {
             }
             current_vpn.step();
         }
+    }
+    /// Check if two map areas overlap
+    #[allow(dead_code)]
+    pub fn overlaps_with(&self, b: &MapArea) -> bool {
+        self.vpn_range.get_end() > b.vpn_range.get_start() && self.vpn_range.get_start() < b.vpn_range.get_end()
     }
 }
 

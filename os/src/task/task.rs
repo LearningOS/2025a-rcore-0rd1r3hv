@@ -9,6 +9,9 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
 
+/// Default priority
+const DEFAULT_PRIORITY: usize = 16;
+
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -68,6 +71,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Stride
+    pub stride: usize,
+
+    /// Priority
+    pub priority: usize,
 }
 
 impl TaskControlBlockInner {
@@ -88,10 +97,8 @@ impl TaskControlBlockInner {
 }
 
 impl TaskControlBlock {
-    /// Create a new process
-    ///
-    /// At present, it is only used for the creation of initproc
-    pub fn new(elf_data: &[u8]) -> Self {
+    /// Create initproc (parent: None) or a new child process (with parent reference)
+    pub fn new(elf_data: &[u8], parent: Option<Weak<Self>>) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
         let trap_cx_ppn = memory_set
@@ -113,11 +120,13 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
                     memory_set,
-                    parent: None,
+                    parent: parent,
                     children: Vec::new(),
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    priority: DEFAULT_PRIORITY,
                 })
             },
         };
@@ -191,6 +200,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    priority: DEFAULT_PRIORITY,
                 })
             },
         });
@@ -235,6 +246,71 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// Spawn a child process
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        // access parent PCB exclusively
+        let mut parent_inner = self.inner_exclusive_access();
+        // create child process with given elf data
+        let task_control_block =
+            Arc::new(TaskControlBlock::new(elf_data, Some(Arc::downgrade(self))));
+        // add to children
+        parent_inner.children.push(task_control_block.clone());
+        task_control_block
+    }
+
+    /// Get the stride of the task
+    pub fn get_stride(&self) -> usize {
+        self.inner_exclusive_access().stride
+    }
+
+    /// Get the priority of the task
+    pub fn get_priority(&self) -> usize {
+        self.inner_exclusive_access().priority
+    }
+
+    /// Update the stride
+    pub fn update_stride(&self, pass: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.stride += pass;
+    }
+
+    /// Set the priority
+    pub fn set_priority(&self, prio: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = prio;
+    }
+
+    /// Mmap
+    pub fn mmap(&self, start: usize, len: usize, prot: usize) -> isize {
+        // Meaningless (Read: 1 << 0, Write: 1 << 1, Exec: 1 << 2)
+        if (prot & !0x7 != 0) || (prot & 0x7 == 0) {
+            return -1;
+        }
+        // Not user owned (TrapContext, Trampoline)
+        if start >= TRAP_CONTEXT_BASE {
+            return -1;
+        }
+        // Prevent overflow
+        start.checked_add(len).map_or(-1, |end| {
+            let mut inner = self.inner_exclusive_access();
+            inner
+                .memory_set
+                .mmap(start.into(), end.into(), (prot as u8) << 1)
+        })
+    }
+    /// Munmap
+    pub fn munmap(&self, start: usize, len: usize) -> isize {
+        // Not user owned
+        if start >= TRAP_CONTEXT_BASE {
+            return -1;
+        }
+        // Prevent overflow
+        start.checked_add(len).map_or(-1, |end| {
+            let mut inner = self.inner_exclusive_access();
+            inner.memory_set.munmap(start.into(), end.into())
+        })
     }
 }
 

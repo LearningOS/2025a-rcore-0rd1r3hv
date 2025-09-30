@@ -300,6 +300,52 @@ impl MemorySet {
             false
         }
     }
+
+    /// Mmap
+    pub fn mmap(&mut self, start: VirtAddr, end: VirtAddr, perm: u8) -> isize {
+        if start.aligned() {
+            let mut new_area = MapArea::new_mmaped(
+                start,
+                end,
+                MapType::Framed,
+                MapPermission::from_bits(perm).unwrap() | MapPermission::U,
+            );
+            if self.areas.iter().all(|area| !new_area.overlaps_with(area)) {
+                // no overlaps
+                new_area.map(&mut self.page_table);
+                self.areas.push(new_area);
+                0
+            } else {
+                // the new segment overlaps with existed segments
+                -1
+            }
+        } else {
+            // If not aligned
+            -1
+        }
+    }
+    /// Munmap (assume that we can only unmap the exact segment that is previously mmaped)
+    pub fn munmap(&mut self, start: VirtAddr, end: VirtAddr) -> isize {
+        if start.aligned() {
+            let unmap_range = VPNRange::new(start.floor(), end.ceil());
+            if let Some(pos) = self.areas.iter().position(|area| {
+                let area_range = area.get_vpn_range();
+                area_range.get_start() == unmap_range.get_start()
+                    && area_range.get_end() == unmap_range.get_end()
+            }) {
+                // Unmap if there is a match
+                self.areas[pos].unmap(&mut self.page_table);
+                self.areas.remove(pos);
+                0
+            } else {
+                // No match
+                -1
+            }
+        } else {
+            // If not aligned
+            -1
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -307,9 +353,11 @@ pub struct MapArea {
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,
     map_type: MapType,
     map_perm: MapPermission,
+    is_mmaped: bool,
 }
 
 impl MapArea {
+    /// create a non-mmaped segment
     pub fn new(
         start_va: VirtAddr,
         end_va: VirtAddr,
@@ -323,6 +371,24 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type,
             map_perm,
+            is_mmaped: false,
+        }
+    }
+    /// create a mmaped segment
+    pub fn new_mmaped(
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        map_type: MapType,
+        map_perm: MapPermission,
+    ) -> Self {
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+        Self {
+            vpn_range: VPNRange::new(start_vpn, end_vpn),
+            data_frames: BTreeMap::new(),
+            map_type,
+            map_perm,
+            is_mmaped: true,
         }
     }
     pub fn from_another(another: &Self) -> Self {
@@ -331,6 +397,7 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type: another.map_type,
             map_perm: another.map_perm,
+            is_mmaped: another.is_mmaped,
         }
     }
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -399,6 +466,15 @@ impl MapArea {
             }
             current_vpn.step();
         }
+    }
+    /// Check if two areas overlap
+    pub fn overlaps_with(&self, b: &MapArea) -> bool {
+        self.vpn_range.get_end() > b.vpn_range.get_start()
+            && self.vpn_range.get_start() < b.vpn_range.get_end()
+    }
+    /// Get vpn range
+    pub fn get_vpn_range(&self) -> VPNRange {
+        self.vpn_range
     }
 }
 

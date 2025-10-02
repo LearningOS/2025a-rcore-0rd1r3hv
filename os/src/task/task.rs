@@ -79,6 +79,10 @@ impl TaskControlBlock {
             },
         }
     }
+    /// get tid of the task
+    pub fn get_tid(&self) -> usize {
+        self.inner_exclusive_access().res.as_ref().unwrap().tid
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
